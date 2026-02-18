@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PaddleAurum · Chat Buddy Agent · Architecture Diagrams</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.6.1/mermaid.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #080c12;
+    --surface: #0e1420;
+    --surface2: #141b28;
+    --border: #1e2d44;
+    --accent: #00e5ff;
+    --accent2: #7c3aed;
+    --accent3: #f59e0b;
+    --accent4: #10b981;
+    --text: #e2eaf7;
+    --text-muted: #5a7099;
+    --glow: rgba(0,229,255,0.15);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Grid noise texture overlay ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,229,255,0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,0.02) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    position: relative;
+    z-index: 1;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 32px 80px;
+  }
+
+  /* ── Hero Header ── */
+  header {
+    position: relative;
+    padding: 64px 0 48px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 64px;
+  }
+
+  .header-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(0,229,255,0.08);
+    border: 1px solid rgba(0,229,255,0.2);
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
+
+  .dot-pulse {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+
+  h1 {
+    font-size: clamp(36px, 5vw, 64px);
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    margin-bottom: 16px;
+  }
+
+  h1 .highlight {
+    color: var(--accent);
+    position: relative;
+  }
+
+  h1 .highlight::after {
+    content: '';
+    position: absolute;
+    bottom: 4px;
+    left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+    opacity: 0.4;
+  }
+
+  .subtitle {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--text-muted);
+    line-height: 1.8;
+    max-width: 640px;
+    margin-bottom: 32px;
+  }
+
+  /* ── Workflow Summary Card ── */
+  .workflow-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 24px 28px;
+    margin-bottom: 64px;
+  }
+
+  .workflow-card h3 {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  .workflow-steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .step-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .step-chip .num {
+    color: var(--accent3);
+    font-weight: 500;
+  }
+
+  /* ── Section Grid ── */
+  .diagrams-grid {
+    display: grid;
+    gap: 48px;
+  }
+
+  /* ── Diagram Card ── */
+  .diagram-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    transition: border-color 0.3s ease;
+    animation: fadeUp 0.6s ease both;
+  }
+
+  .diagram-card:hover {
+    border-color: rgba(0,229,255,0.3);
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .diagram-card:nth-child(1) { animation-delay: 0.05s; }
+  .diagram-card:nth-child(2) { animation-delay: 0.1s; }
+  .diagram-card:nth-child(3) { animation-delay: 0.15s; }
+  .diagram-card:nth-child(4) { animation-delay: 0.2s; }
+  .diagram-card:nth-child(5) { animation-delay: 0.25s; }
+  .diagram-card:nth-child(6) { animation-delay: 0.3s; }
+
+  .card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 24px 28px 0;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+    gap: 16px;
+  }
+
+  .card-header-left {
+    flex: 1;
+  }
+
+  .diagram-type-tag {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+    margin-bottom: 10px;
+  }
+
+  .tag-flow   { background: rgba(0,229,255,0.1); color: var(--accent); border: 1px solid rgba(0,229,255,0.25); }
+  .tag-seq    { background: rgba(124,58,237,0.1); color: #a78bfa; border: 1px solid rgba(124,58,237,0.25); }
+  .tag-state  { background: rgba(245,158,11,0.1); color: var(--accent3); border: 1px solid rgba(245,158,11,0.25); }
+  .tag-class  { background: rgba(16,185,129,0.1); color: var(--accent4); border: 1px solid rgba(16,185,129,0.25); }
+  .tag-er     { background: rgba(239,68,68,0.1); color: #f87171; border: 1px solid rgba(239,68,68,0.25); }
+  .tag-c4     { background: rgba(251,191,36,0.1); color: #fbbf24; border: 1px solid rgba(251,191,36,0.25); }
+
+  .card-number {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 42px;
+    font-weight: 300;
+    color: var(--border);
+    line-height: 1;
+    user-select: none;
+  }
+
+  .card-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 6px;
+    letter-spacing: -0.02em;
+  }
+
+  .card-desc {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.7;
+  }
+
+  .card-body {
+    padding: 28px;
+    overflow-x: auto;
+  }
+
+  /* ── Mermaid override ── */
+  .mermaid {
+    display: flex;
+    justify-content: center;
+    min-height: 100px;
+  }
+
+  .mermaid svg {
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* ── Footer ── */
+  footer {
+    margin-top: 80px;
+    padding-top: 32px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: gap;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 640px) {
+    .container { padding: 0 16px 60px; }
+    .card-body { padding: 16px; }
+    .card-header { flex-direction: column-reverse; }
+    .card-number { font-size: 28px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <header>
+    <div class="header-badge">
+      <span class="dot-pulse"></span>
+      PaddleAurum · Agentic AI System
+    </div>
+    <h1>Chat Buddy<br><span class="highlight">Agent Diagrams</span></h1>
+    <p class="subtitle">
+      Six architecture views of the same agent workflow.<br>
+      Stack: CrewAI · Ollama (Llama 3) · LangChain · SQLite · Playwright
+    </p>
+  </header>
+
+  <!-- Workflow summary -->
+  <div class="workflow-card">
+    <h3>Canonical Workflow · All diagrams derived from this logic</h3>
+    <div class="workflow-steps">
+      <div class="step-chip"><span class="num">01</span> Receive user query</div>
+      <div class="step-chip"><span class="num">02</span> Check cache (SQLite)</div>
+      <div class="step-chip"><span class="num">03</span> Cache HIT → return</div>
+      <div class="step-chip"><span class="num">04</span> Cache MISS → fetch memory</div>
+      <div class="step-chip"><span class="num">05</span> Augment prompt</div>
+      <div class="step-chip"><span class="num">06</span> Call Ollama LLM</div>
+      <div class="step-chip"><span class="num">07</span> Validate response</div>
+      <div class="step-chip"><span class="num">08</span> Fallback if invalid</div>
+      <div class="step-chip"><span class="num">09</span> Store interaction</div>
+      <div class="step-chip"><span class="num">10</span> Update cache</div>
+      <div class="step-chip"><span class="num">11</span> Return final answer</div>
+    </div>
+  </div>
+
+  <!-- Diagrams -->
+  <div class="diagrams-grid">
+
+    <!-- 1. Flowchart -->
+    <div class="diagram-card">
+      <div class="card-header">
+        <div class="card-header-left">
+          <div class="diagram-type-tag tag-flow">Diagram 01 · Flowchart</div>
+          <div class="card-title">The Reasoning Loop</div>
+          <div class="card-desc">Decision branches, error paths, and step-by-step logic<br>the Chat Buddy follows for every incoming query.</div>
+        </div>
+        <div class="card-number">01</div>
+      </div>
+      <div class="card-body">
+        <div class="mermaid">
+flowchart TD
+    A([🏁 START]) --> B[Receive User Query\nvia Chat / Email]
+    B --> C{Cache\nLookup}
+
+    C -->|HIT ✓| D[Retrieve Cached\nResponse]
+    D --> E([↩ Return Response\nto User])
+
+    C -->|MISS ✗| F[Fetch Conversation\nHistory from SQLite]
+    F --> G{Memory\nFound?}
+
+    G -->|Yes| H[Augment Prompt\nwith Context + History]
+    G -->|No| I[Use Base\nSystem Prompt Only]
+
+    H --> J[Call Ollama LLM\nllama3:8b]
+    I --> J
+
+    J --> K{LLM Call\nSucceeded?}
+
+    K -->|No — Timeout / Error| L[Log Error to\nSQLite errors table]
+    L --> M[Return Fallback\nTemplate Response]
+    M --> E
+
+    K -->|Yes| N[Validate Response\nNot empty · No hallucination flags]
+    N --> O{Valid?}
+
+    O -->|No| P[Flag Response\nUse Fallback]
+    P --> E
+
+    O -->|Yes| Q[Store Interaction\nin SQLite · messages table]
+    Q --> R[Update Cache\nTTL = 60 min]
+    R --> E
+
+    style A fill:#00e5ff,color:#080c12,stroke:none
+    style E fill:#10b981,color:#fff,stroke:none
+    style L fill:#ef4444,color:#fff,stroke:none
+    style M fill:#f59e0b,color:#080c12,stroke:none
+    style P fill:#f59e0b,color:#080c12,stroke:none
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. Sequence Diagram -->
+    <div class="diagram-card">
+      <div class="card-header">
+        <div class="card-header-left">
+          <div class="diagram-type-tag tag-seq">Diagram 02 · Sequence</div>
+          <div class="card-title">Multi-Component Interaction</div>
+          <div class="card-desc">Real-time message flow between the User, Chat Buddy, Ollama,<br>SQLite Cache, and Memory Store across one query lifecycle.</div>
+        </div>
+        <div class="card-number">02</div>
+      </div>
+      <div class="card-body">
+        <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as 👤 User
+    participant CB as Chat Buddy Agent
+    participant CA as Cache (SQLite)
+    participant MS as Memory Store (SQLite)
+    participant LLM as Ollama LLM (Llama 3)
+    participant LOG as Error Logger
+
+    U->>CB: send_message(query, session_id)
+    activate CB
+
+    CB->>CA: lookup(hash(query))
+    activate CA
+    CA-->>CB: CacheResult (hit / miss)
+    deactivate CA
+
+    alt Cache HIT
+        CB-->>U: cached_response
+    else Cache MISS
+        CB->>MS: get_history(session_id, limit=10)
+        activate MS
+        MS-->>CB: ConversationHistory[]
+        deactivate MS
+
+        CB->>CB: build_augmented_prompt(query, history)
+
+        CB->>LLM: /api/generate(model, prompt, stream=false)
+        activate LLM
+
+        alt LLM Success
+            LLM-->>CB: GeneratedResponse
+            deactivate LLM
+
+            CB->>CB: validate_response(GeneratedResponse)
+
+            alt Response Valid
+                CB->>MS: store_message(user_msg, ai_msg, session_id)
+                activate MS
+                MS-->>CB: ack
+                deactivate MS
+
+                CB->>CA: set(hash(query), response, ttl=3600)
+                activate CA
+                CA-->>CB: ack
+                deactivate CA
+
+                CB-->>U: response
+            else Response Invalid
+                CB-->>U: fallback_template_response
+            end
+
+        else LLM Timeout / Error
+            LLM-->>CB: Error / Timeout
+            CB->>LOG: log_error(error_details, session_id)
+            activate LOG
+            LOG-->>CB: ack
+            deactivate LOG
+            CB-->>U: fallback_template_response
+        end
+    end
+
+    deactivate CB
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. State Diagram -->
+    <div class="diagram-card">
+      <div class="card-header">
+        <div class="card-header-left">
+          <div class="diagram-type-tag tag-state">Diagram 03 · State</div>
+          <div class="card-title">Agent Internal Status</div>
+          <div class="card-desc">Every state the Chat Buddy's brain can occupy and the events<br>that trigger transitions between them.</div>
+        </div>
+        <div class="card-number">03</div>
+      </div>
+      <div class="card-body">
+        <div class="mermaid">
+stateDiagram-v2
+    [*] --> Idle : Agent initialised
+
+    Idle --> QueryReceived : message_arrived(query)
+
+    QueryReceived --> CheckingCache : begin_cache_lookup()
+
+    CheckingCache --> Responding : cache_hit
+    CheckingCache --> FetchingMemory : cache_miss
+
+    FetchingMemory --> BuildingPrompt : history_retrieved
+    FetchingMemory --> BuildingPrompt : no_history_found
+
+    BuildingPrompt --> CallingLLM : prompt_ready
+
+    CallingLLM --> ValidatingResponse : llm_response_received
+    CallingLLM --> ErrorState : llm_timeout_or_error
+
+    ValidatingResponse --> StoringMemory : response_valid
+    ValidatingResponse --> Responding : response_invalid [uses fallback]
+
+    StoringMemory --> UpdatingCache : message_stored
+
+    UpdatingCache --> Responding : cache_updated
+
+    Responding --> Idle : response_delivered
+
+    ErrorState --> Responding : fallback_dispatched
+    ErrorState --> Idle : error_logged_no_response_needed
+
+    note right of CallingLLM
+        Timeout: 30s
+        Model: llama3:8b via Ollama
+    end note
+
+    note right of ErrorState
+        Error logged to
+        SQLite errors table
+    end note
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. Class Diagram -->
+    <div class="diagram-card">
+      <div class="card-header">
+        <div class="card-header-left">
+          <div class="diagram-type-tag tag-class">Diagram 04 · Class</div>
+          <div class="card-title">Software Architecture</div>
+          <div class="card-desc">Core classes, attributes, methods, and relationships<br>that implement the Chat Buddy in Python + CrewAI.</div>
+        </div>
+        <div class="card-number">04</div>
+      </div>
+      <div class="card-body">
+        <div class="mermaid">
+classDiagram
+    class ChatBuddyAgent {
+        +String agent_id
+        +String session_id
+        +String model_name
+        +int cache_ttl_seconds
+        +process_query(query: str) Response
+        +build_augmented_prompt(query, history) str
+        +validate_response(raw: str) bool
+        +get_fallback_response() Response
+        -_run_pipeline(query: str) Response
+    }
+
+    class OllamaClient {
+        +String base_url
+        +String model
+        +int timeout_seconds
+        +generate(prompt: str) LLMResponse
+        +health_check() bool
+        -_post(endpoint, payload) dict
+    }
+
+    class CacheStore {
+        +String db_path
+        +int default_ttl
+        +lookup(key: str) CacheResult
+        +set(key: str, value: str, ttl: int) void
+        +evict_expired() void
+        -_hash_key(query: str) str
+    }
+
+    class MemoryStore {
+        +String db_path
+        +get_history(session_id: str, limit: int) List~Message~
+        +store_message(msg: Message) void
+        +clear_session(session_id: str) void
+        -_connect() Connection
+    }
+
+    class ErrorLogger {
+        +String db_path
+        +log_error(error: Exception, context: dict) void
+        +get_recent_errors(limit: int) List~ErrorRecord~
+    }
+
+    class Message {
+        +String message_id
+        +String session_id
+        +String role
+        +String content
+        +DateTime timestamp
+    }
+
+    class LLMResponse {
+        +String raw_text
+        +int tokens_used
+        +float latency_ms
+        +bool success
+    }
+
+    class CacheResult {
+        +bool hit
+        +String value
+        +DateTime expires_at
+    }
+
+    class Response {
+        +String content
+        +String source
+        +bool from_cache
+        +bool from_fallback
+        +float latency_ms
+    }
+
+    ChatBuddyAgent --> OllamaClient : uses
+    ChatBuddyAgent --> CacheStore : uses
+    ChatBuddyAgent --> MemoryStore : uses
+    ChatBuddyAgent --> ErrorLogger : uses
+    ChatBuddyAgent ..> Message : creates
+    ChatBuddyAgent ..> Response : returns
+    OllamaClient ..> LLMResponse : returns
+    CacheStore ..> CacheResult : returns
+    MemoryStore --> Message : stores / retrieves
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. ER Diagram -->
+    <div class="diagram-card">
+      <div class="card-header">
+        <div class="card-header-left">
+          <div class="diagram-type-tag tag-er">Diagram 05 · ER Diagram</div>
+          <div class="card-title">Memory &amp; Knowledge Schema</div>
+          <div class="card-desc">How the Chat Buddy stores users, sessions, messages, cache entries,<br>and error records in SQLite — all data relationships and cardinalities.</div>
+        </div>
+        <div class="card-number">05</div>
+      </div>
+      <div class="card-body">
+        <div class="mermaid">
+erDiagram
+    USER {
+        string user_id PK
+        string name
+        string email
+        string channel
+        datetime created_at
+        string preferences_json
+    }
+
+    SESSION {
+        string session_id PK
+        string user_id FK
+        datetime started_at
+        datetime last_active
+        string status
+    }
+
+    MESSAGE {
+        string message_id PK
+        string session_id FK
+        string role
+        text content
+        int tokens_used
+        datetime timestamp
+        float latency_ms
+    }
+
+    CACHE_ENTRY {
+        string cache_key PK
+        string session_id FK
+        text response_value
+        datetime created_at
+        datetime expires_at
+        int hit_count
+    }
+
+    ERROR_LOG {
+        string error_id PK
+        string session_id FK
+        string error_type
+        text error_message
+        text context_json
+        datetime occurred_at
+    }
+
+    PRODUCT_CONTEXT {
+        string product_id PK
+        string name
+        string category
+        float price
+        int stock_level
+        text description_embedding
+    }
+
+    USER ||--o{ SESSION : "has"
+    SESSION ||--o{ MESSAGE : "contains"
+    SESSION ||--o{ CACHE_ENTRY : "caches"
+    SESSION ||--o{ ERROR_LOG : "logs"
+    MESSAGE }o--o{ PRODUCT_CONTEXT : "references"
+        </div>
+      </div>
+    </div>
+
+    <!-- 6. C4 Diagram -->
+    <div class="diagram-card">
+      <div class="card-header">
+        <div class="card-header-left">
+          <div class="diagram-type-tag tag-c4">Diagram 06 · C4 Context</div>
+          <div class="card-title">System Context (Level 1)</div>
+          <div class="card-desc">The big-picture view: who uses the Chat Buddy, what systems it touches,<br>and where it sits within the PaddleAurum infrastructure.</div>
+        </div>
+        <div class="card-number">06</div>
+      </div>
+      <div class="card-body">
+        <div class="mermaid">
+graph TB
+    subgraph USERS["👥 People"]
+        CU("👤 Customer\nPaddleAurum shopper\nasking product questions")
+        SA("🛠 Store Admin\nConfigures agents,\nreviews error logs")
+    end
+
+    subgraph CORE["🤖 PaddleAurum Agentic System"]
+        CEO("PaddleAurum CEO Agent\nOrchestrator · CrewAI hierarchical")
+        CB("Chat Buddy Agent\n────────────────────\n· process_query()\n· validate_response()\n· build_augmented_prompt()")
+        REC("Recommender Agent\nPersonalised upsells")
+        SS("Stock Scout\nInventory watcher")
+    end
+
+    subgraph INFRA["💾 Local Infrastructure"]
+        SQLITE[("SQLite\n· messages\n· cache_entries\n· error_log\n· sessions")]
+        OLLAMA["Ollama Server\nllama3:8b\nRunning locally"]
+    end
+
+    subgraph EXTERNAL["🌐 External Systems"]
+        SHOPIFY["Shopify / WooCommerce\nProduct catalogue · Orders\nREST API"]
+        SERP["SerpAPI\nFree tier · Web search\nfor product comparisons"]
+        EMAIL["Email Gateway\nSMTP · Outbound\ncustomer replies"]
+    end
+
+    CU -->|"Sends chat message"| CB
+    SA -->|"Manages & monitors"| CEO
+    CEO -->|"Delegates tasks"| CB
+    CEO -->|"Delegates tasks"| REC
+    CEO -->|"Delegates tasks"| SS
+
+    CB -->|"Read/write memory & cache"| SQLITE
+    CB -->|"POST /api/generate"| OLLAMA
+    CB -->|"Fetch product context"| SHOPIFY
+    CB -->|"Optional: product search"| SERP
+    CB -->|"Sends reply email"| EMAIL
+
+    style CU fill:#1e3a5f,color:#7dd3fc,stroke:#2563eb
+    style SA fill:#1e3a5f,color:#7dd3fc,stroke:#2563eb
+    style CB fill:#064e3b,color:#6ee7b7,stroke:#10b981,stroke-width:2px
+    style CEO fill:#1e1b4b,color:#c4b5fd,stroke:#7c3aed
+    style REC fill:#1e1b4b,color:#c4b5fd,stroke:#7c3aed
+    style SS fill:#1e1b4b,color:#c4b5fd,stroke:#7c3aed
+    style SQLITE fill:#422006,color:#fed7aa,stroke:#f59e0b
+    style OLLAMA fill:#422006,color:#fed7aa,stroke:#f59e0b
+    style SHOPIFY fill:#1f2937,color:#9ca3af,stroke:#374151
+    style SERP fill:#1f2937,color:#9ca3af,stroke:#374151
+    style EMAIL fill:#1f2937,color:#9ca3af,stroke:#374151
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end diagrams-grid -->
+
+  <footer>
+    <span>PaddleAurum · Agentic AI Architecture · Chat Buddy Agent</span>
+    <span>CrewAI · Ollama · LangChain · SQLite · Playwright</span>
+  </footer>
+
+</div><!-- end container -->
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      background: '#0e1420',
+      primaryColor: '#0e1e30',
+      primaryBorderColor: '#1e2d44',
+      primaryTextColor: '#e2eaf7',
+      secondaryColor: '#141b28',
+      tertiaryColor: '#1e2d44',
+      lineColor: '#00e5ff',
+      edgeLabelBackground: '#0e1420',
+      nodeBorder: '#1e2d44',
+      clusterBkg: '#0a1018',
+      clusterBorder: '#1e2d44',
+      titleColor: '#e2eaf7',
+      fontFamily: 'JetBrains Mono, monospace',
+      fontSize: '13px',
+      actorLineColor: '#1e2d44',
+      actorBkg: '#0e1420',
+      actorBorder: '#1e2d44',
+      actorTextColor: '#e2eaf7',
+      signalColor: '#00e5ff',
+      signalTextColor: '#e2eaf7',
+      labelBoxBkgColor: '#141b28',
+      labelBoxBorderColor: '#1e2d44',
+      labelTextColor: '#e2eaf7',
+      loopTextColor: '#e2eaf7',
+      noteBorderColor: '#1e2d44',
+      noteBkgColor: '#141b28',
+      noteTextColor: '#e2eaf7',
+    },
+    flowchart: { curve: 'basis', padding: 20 },
+    sequence: { actorMargin: 60, mirrorActors: false },
+    er: { useMaxWidth: true },
+  });
+</script>
+</body>
+</html>
