@@ -1,3 +1,322 @@
+# """
+# workflows/graph.py
+# ──────────────────
+# Builds and compiles the PaddleAurum LangGraph StateGraph.
+# This is the central wiring module — all nodes and edges are registered here.
+
+# Execution topology:
+#   ceo_orchestrator
+#        ↓ (fan-out)
+#   customer_captain  stock_sergeant  promo_general
+#        ↓                  ↓               ↓
+#   chat_buddy          stock_scout     recommender
+#        ↓                  ↓               ↓
+#               aggregator (barrier)
+#                     ↓
+#         error_recovery  OR  memory_persist
+#                     ↓               ↓
+#           ceo_orchestrator     done_notify
+#                                     ↓
+#                                    END
+# """
+# from __future__ import annotations
+
+# import logging
+
+# from langgraph.checkpoint.sqlite import SqliteSaver
+# from langgraph.graph import END, StateGraph
+
+# from agents.ceo import ceo_orchestrator_node
+# from agents.chat_buddy import chat_buddy_node
+# from agents.customer_captain import customer_captain_node
+# from agents.promo_general import promo_general_node
+# from agents.recommender import recommender_node
+# from agents.stock_scout import stock_scout_node
+# from agents.stock_sergeant import stock_sergeant_node
+# from config.settings import settings
+# from workflows.router import (
+#     route_from_ceo,
+#     route_post_aggregation,
+#     route_post_error_recovery,
+# )
+# from workflows.state import PaddleAurumState
+
+# logger = logging.getLogger(__name__)
+
+
+# # ── Utility nodes (pure Python, no LLM) ──────────────────────────────────────
+
+# async def aggregator_node(state: PaddleAurumState) -> PaddleAurumState:
+#     """
+#     Barrier node: waits until all branch outputs are populated.
+#     Merges parallel results and triggers CEO synthesis.
+#     """
+#     import time
+#     from agents.customer_captain import customer_captain_review_node
+#     from agents.stock_sergeant import stock_sergeant_review_node
+
+#     state["current_step"] = "aggregator"
+#     logger.info("[Aggregator] Collecting branch results")
+
+#     # Post-processing hooks
+#     state = await customer_captain_review_node(state)
+#     state = await stock_sergeant_review_node(state)
+
+#     # Mark completed tasks
+#     done_count = sum(1 for t in state["task_queue"] if t["status"] == "done")
+#     failed_count = sum(1 for t in state["task_queue"] if t["status"] == "failed")
+#     logger.info("[Aggregator] Tasks: %d done, %d failed", done_count, failed_count)
+
+#     state["short_term_memory"].append({
+#         "agent_id": "aggregator",
+#         "role": "system",
+#         "content": f"Aggregation complete. Done: {done_count}, Failed: {failed_count}",
+#         "timestamp": time.time(),
+#         "tool_calls": None,
+#         "tool_results": None,
+#     })
+
+#     # Trigger CEO synthesis by setting iteration_count to signal synthesis phase
+#     # CEO will synthesise report on next call (iteration_count >= 1)
+#     return state
+
+
+# async def error_recovery_node(state: PaddleAurumState) -> PaddleAurumState:
+#     """
+#     Retry failed tasks with exponential backoff.
+#     Tasks exceeding max_retries are marked 'skipped'.
+#     """
+#     import asyncio
+#     import time
+
+#     state["current_step"] = "error_recovery"
+#     failed_tasks = [t for t in state["task_queue"] if t["status"] == "failed"]
+
+#     for task in failed_tasks:
+#         if task["retries"] < task["max_retries"]:
+#             wait = min(2 ** task["retries"], 30)  # cap at 30s
+#             logger.info(
+#                 "[Error Recovery] Retrying task %s (attempt %d, wait %ds)",
+#                 task["task_id"], task["retries"] + 1, wait,
+#             )
+#             await asyncio.sleep(wait)
+#             task["status"] = "pending"
+#             task["retries"] += 1
+#             state["error_log"].append({
+#                 "task_id": task["task_id"],
+#                 "retry_attempt": task["retries"],
+#                 "wait_seconds": wait,
+#                 "timestamp": time.time(),
+#             })
+#         else:
+#             logger.warning("[Error Recovery] Task %s exceeded max retries — skipping", task["task_id"])
+#             task["status"] = "skipped"
+#             state["failed_tasks"].append(task)
+#             state["error_log"].append({
+#                 "task_id": task["task_id"],
+#                 "final_status": "skipped",
+#                 "reason": task.get("error_message", "unknown"),
+#                 "timestamp": time.time(),
+#             })
+
+#     return state
+
+
+# async def memory_persist_node(state: PaddleAurumState) -> PaddleAurumState:
+#     """
+#     Persist session memory to SQLite and trim short-term window.
+#     Also triggers CEO final report synthesis.
+#     """
+#     import time
+#     from memory.memory_manager import memory_manager
+
+#     state["current_step"] = "memory_persist"
+#     logger.info("[Memory] Persisting session %s", state["session_id"])
+
+#     # Write long-term memory
+#     if state["short_term_memory"]:
+#         row_ids = await memory_manager.write_session(
+#             state["session_id"], state["short_term_memory"]
+#         )
+#         state["long_term_memory_keys"].extend(row_ids)
+
+#     # Trim window
+#     state["short_term_memory"] = memory_manager.trim_short_term(
+#         state["short_term_memory"]
+#     )
+
+#     # CEO synthesis (sets final_report)
+#     state = await ceo_orchestrator_node(state)
+
+#     return state
+
+
+# async def done_notify_node(state: PaddleAurumState) -> PaddleAurumState:
+#     """
+#     Terminal node: log summary, optionally send Slack/email notification.
+#     """
+#     import time
+#     from tools.email_tool import send_alert
+
+#     state["current_step"] = "done"
+#     report = state.get("final_report") or {}
+
+#     summary = (
+#         f"Session: {state['session_id']}\n"
+#         f"Goal: {state['goal']}\n"
+#         f"Summary: {report.get('summary', 'No summary.')}\n"
+#         f"Wins: {report.get('wins', [])}\n"
+#         f"Blockers: {report.get('blockers', [])}\n"
+#         f"Next Actions: {report.get('next_actions', [])}\n"
+#         f"Failed tasks: {len(state.get('failed_tasks', []))}\n"
+#         f"Error count: {len(state.get('error_log', []))}"
+#     )
+
+#     logger.info("\n%s\n%s\n%s", "=" * 60, summary, "=" * 60)
+
+#     # Send admin email (non-blocking, best effort)
+#     try:
+#         await send_alert("PaddleAurum Session Complete", summary)
+#     except Exception as exc:
+#         logger.warning("Could not send completion email: %s", exc)
+
+#     return state
+
+
+# # ── Graph builder ─────────────────────────────────────────────────────────────
+
+# def build_graph(use_checkpointer: bool = True) -> StateGraph:
+#     """
+#     Build and compile the PaddleAurum LangGraph.
+
+#     Args:
+#         use_checkpointer: If True, attach SQLite checkpointer for persistence.
+
+#     Returns:
+#         Compiled StateGraph ready for async streaming execution.
+#     """
+#     workflow = StateGraph(PaddleAurumState)
+
+#     # ── Register all nodes ────────────────────────────────────────────────────
+#     workflow.add_node("ceo_orchestrator",  ceo_orchestrator_node)
+#     workflow.add_node("customer_captain",  customer_captain_node)
+#     workflow.add_node("chat_buddy",        chat_buddy_node)
+#     workflow.add_node("stock_sergeant",    stock_sergeant_node)
+#     workflow.add_node("stock_scout",       stock_scout_node)
+#     workflow.add_node("promo_general",     promo_general_node)
+#     workflow.add_node("recommender",       recommender_node)
+#     workflow.add_node("aggregator",        aggregator_node)
+#     workflow.add_node("error_recovery",    error_recovery_node)
+#     workflow.add_node("memory_persist",    memory_persist_node)
+#     workflow.add_node("done_notify",       done_notify_node)
+
+#     # ── Entry point ───────────────────────────────────────────────────────────
+#     workflow.set_entry_point("ceo_orchestrator")
+
+#     # ── CEO → parallel team leads (conditional fan-out) ───────────────────────
+#     workflow.add_conditional_edges(
+#         "ceo_orchestrator",
+#         route_from_ceo,
+#         {
+#             "customer_captain": "customer_captain",
+#             "stock_sergeant":   "stock_sergeant",
+#             "promo_general":    "promo_general",
+#             "aggregator":       "aggregator",   # fallback if no tasks
+#         },
+#     )
+
+#     # ── Team Lead → Worker edges ──────────────────────────────────────────────
+#     workflow.add_edge("customer_captain", "chat_buddy")
+#     workflow.add_edge("stock_sergeant",   "stock_scout")
+#     workflow.add_edge("promo_general",    "recommender")
+
+#     # ── Workers → Aggregator (all branches converge here) ────────────────────
+#     workflow.add_edge("chat_buddy",   "aggregator")
+#     workflow.add_edge("stock_scout",  "aggregator")
+#     workflow.add_edge("recommender",  "aggregator")
+
+#     # ── Aggregator → conditional ──────────────────────────────────────────────
+#     workflow.add_conditional_edges(
+#         "aggregator",
+#         route_post_aggregation,
+#         {
+#             "error_recovery": "error_recovery",
+#             "memory_persist": "memory_persist",
+#         },
+#     )
+
+#     # ── Error recovery → conditional re-plan or persist ──────────────────────
+#     workflow.add_conditional_edges(
+#         "error_recovery",
+#         route_post_error_recovery,
+#         {
+#             "ceo_orchestrator": "ceo_orchestrator",
+#             "memory_persist":   "memory_persist",
+#         },
+#     )
+
+#     # ── Linear tail ───────────────────────────────────────────────────────────
+#     workflow.add_edge("memory_persist", "done_notify")
+#     workflow.add_edge("done_notify",    END)
+
+#     # ── Compile ───────────────────────────────────────────────────────────────
+#     if use_checkpointer:
+#         checkpointer = SqliteSaver.from_conn_string(settings.sqlite_db_path)
+#         compiled = workflow.compile(checkpointer=checkpointer)
+#     else:
+#         compiled = workflow.compile()
+
+#     logger.info("LangGraph compiled successfully")
+#     return compiled
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# @#####################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 """
 workflows/graph.py
 ──────────────────
@@ -6,16 +325,20 @@ This is the central wiring module — all nodes and edges are registered here.
 
 Execution topology:
   ceo_orchestrator
-       ↓ (fan-out)
+       ↓ (fan-out with Send() — true parallelism)
   customer_captain  stock_sergeant  promo_general
        ↓                  ↓               ↓
   chat_buddy          stock_scout     recommender
+       ↓                  ↓               ↓
+  cust_capt_review   stock_sgt_review     ↓
        ↓                  ↓               ↓
               aggregator (barrier)
                     ↓
         error_recovery  OR  memory_persist
                     ↓               ↓
-          ceo_orchestrator     done_notify
+          ceo_orchestrator     ceo_orchestrator (synthesis)
+                    ↓               ↓
+                  done_notify     done_notify
                                     ↓
                                    END
 """
@@ -25,14 +348,21 @@ import logging
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
+from langgraph.types import Send
 
 from agents.ceo import ceo_orchestrator_node
 from agents.chat_buddy import chat_buddy_node
-from agents.customer_captain import customer_captain_node
+from agents.customer_captain import (
+    customer_captain_node,
+    customer_captain_review_node,
+)
 from agents.promo_general import promo_general_node
 from agents.recommender import recommender_node
 from agents.stock_scout import stock_scout_node
-from agents.stock_sergeant import stock_sergeant_node
+from agents.stock_sergeant import (
+    stock_sergeant_node,
+    stock_sergeant_review_node,
+)
 from config.settings import settings
 from workflows.router import (
     route_from_ceo,
@@ -49,18 +379,13 @@ logger = logging.getLogger(__name__)
 async def aggregator_node(state: PaddleAurumState) -> PaddleAurumState:
     """
     Barrier node: waits until all branch outputs are populated.
-    Merges parallel results and triggers CEO synthesis.
+    Merges parallel results, increments iteration count for synthesis,
+    and decides next step (error recovery or memory persist).
     """
     import time
-    from agents.customer_captain import customer_captain_review_node
-    from agents.stock_sergeant import stock_sergeant_review_node
 
     state["current_step"] = "aggregator"
     logger.info("[Aggregator] Collecting branch results")
-
-    # Post-processing hooks
-    state = await customer_captain_review_node(state)
-    state = await stock_sergeant_review_node(state)
 
     # Mark completed tasks
     done_count = sum(1 for t in state["task_queue"] if t["status"] == "done")
@@ -76,8 +401,9 @@ async def aggregator_node(state: PaddleAurumState) -> PaddleAurumState:
         "tool_results": None,
     })
 
-    # Trigger CEO synthesis by setting iteration_count to signal synthesis phase
-    # CEO will synthesise report on next call (iteration_count >= 1)
+    # Signal synthesis phase for CEO (iteration_count == 1 after aggregator)
+    state["iteration_count"] += 1
+
     return state
 
 
@@ -125,7 +451,7 @@ async def error_recovery_node(state: PaddleAurumState) -> PaddleAurumState:
 async def memory_persist_node(state: PaddleAurumState) -> PaddleAurumState:
     """
     Persist session memory to SQLite and trim short-term window.
-    Also triggers CEO final report synthesis.
+    (CEO synthesis is now triggered via a separate graph edge.)
     """
     import time
     from memory.memory_manager import memory_manager
@@ -145,9 +471,7 @@ async def memory_persist_node(state: PaddleAurumState) -> PaddleAurumState:
         state["short_term_memory"]
     )
 
-    # CEO synthesis (sets final_report)
-    state = await ceo_orchestrator_node(state)
-
+    # No direct CEO call here — handled by graph edge
     return state
 
 
@@ -183,6 +507,21 @@ async def done_notify_node(state: PaddleAurumState) -> PaddleAurumState:
     return state
 
 
+# ── Conditional edge after CEO (synthesis vs planning) ───────────────────────
+
+def route_from_ceo_synthesis(state: PaddleAurumState) -> str:
+    """
+    After CEO node, decide next step based on iteration_count.
+      - iteration_count == 0: initial planning → fan-out to leads
+      - iteration_count >= 2: synthesis done → go to done_notify
+    (iteration_count == 1 occurs during synthesis call from memory_persist)
+    """
+    if state["iteration_count"] >= 2:
+        return "done_notify"
+    # iteration_count == 0 → planning; if it's 1, we shouldn't get here (should go to synthesis)
+    return "fan_out"
+
+
 # ── Graph builder ─────────────────────────────────────────────────────────────
 
 def build_graph(use_checkpointer: bool = True) -> StateGraph:
@@ -198,31 +537,28 @@ def build_graph(use_checkpointer: bool = True) -> StateGraph:
     workflow = StateGraph(PaddleAurumState)
 
     # ── Register all nodes ────────────────────────────────────────────────────
-    workflow.add_node("ceo_orchestrator",  ceo_orchestrator_node)
-    workflow.add_node("customer_captain",  customer_captain_node)
-    workflow.add_node("chat_buddy",        chat_buddy_node)
-    workflow.add_node("stock_sergeant",    stock_sergeant_node)
-    workflow.add_node("stock_scout",       stock_scout_node)
-    workflow.add_node("promo_general",     promo_general_node)
-    workflow.add_node("recommender",       recommender_node)
-    workflow.add_node("aggregator",        aggregator_node)
-    workflow.add_node("error_recovery",    error_recovery_node)
-    workflow.add_node("memory_persist",    memory_persist_node)
-    workflow.add_node("done_notify",       done_notify_node)
+    workflow.add_node("ceo_orchestrator",          ceo_orchestrator_node)
+    workflow.add_node("customer_captain",          customer_captain_node)
+    workflow.add_node("chat_buddy",                chat_buddy_node)
+    workflow.add_node("customer_captain_review",   customer_captain_review_node)
+    workflow.add_node("stock_sergeant",            stock_sergeant_node)
+    workflow.add_node("stock_scout",               stock_scout_node)
+    workflow.add_node("stock_sergeant_review",     stock_sergeant_review_node)
+    workflow.add_node("promo_general",             promo_general_node)
+    workflow.add_node("recommender",               recommender_node)
+    workflow.add_node("aggregator",                 aggregator_node)
+    workflow.add_node("error_recovery",             error_recovery_node)
+    workflow.add_node("memory_persist",             memory_persist_node)
+    workflow.add_node("done_notify",                done_notify_node)
 
     # ── Entry point ───────────────────────────────────────────────────────────
     workflow.set_entry_point("ceo_orchestrator")
 
-    # ── CEO → parallel team leads (conditional fan-out) ───────────────────────
+    # ── CEO → conditional fan-out (Send() for true parallelism) ───────────────
     workflow.add_conditional_edges(
         "ceo_orchestrator",
-        route_from_ceo,
-        {
-            "customer_captain": "customer_captain",
-            "stock_sergeant":   "stock_sergeant",
-            "promo_general":    "promo_general",
-            "aggregator":       "aggregator",   # fallback if no tasks
-        },
+        route_from_ceo,          # returns List[Send] now (see router.py)
+        # No mapping dict when using Send
     )
 
     # ── Team Lead → Worker edges ──────────────────────────────────────────────
@@ -230,10 +566,14 @@ def build_graph(use_checkpointer: bool = True) -> StateGraph:
     workflow.add_edge("stock_sergeant",   "stock_scout")
     workflow.add_edge("promo_general",    "recommender")
 
-    # ── Workers → Aggregator (all branches converge here) ────────────────────
-    workflow.add_edge("chat_buddy",   "aggregator")
-    workflow.add_edge("stock_scout",  "aggregator")
-    workflow.add_edge("recommender",  "aggregator")
+    # ── Worker → Review edges ─────────────────────────────────────────────────
+    workflow.add_edge("chat_buddy",   "customer_captain_review")
+    workflow.add_edge("stock_scout",  "stock_sergeant_review")
+    workflow.add_edge("recommender",  "aggregator")   # no review for marketing worker
+
+    # ── Review nodes → Aggregator ─────────────────────────────────────────────
+    workflow.add_edge("customer_captain_review", "aggregator")
+    workflow.add_edge("stock_sergeant_review",   "aggregator")
 
     # ── Aggregator → conditional ──────────────────────────────────────────────
     workflow.add_conditional_edges(
@@ -255,9 +595,21 @@ def build_graph(use_checkpointer: bool = True) -> StateGraph:
         },
     )
 
-    # ── Linear tail ───────────────────────────────────────────────────────────
-    workflow.add_edge("memory_persist", "done_notify")
-    workflow.add_edge("done_notify",    END)
+    # ── Memory persist → CEO synthesis ────────────────────────────────────────
+    workflow.add_edge("memory_persist", "ceo_orchestrator")
+
+    # ── CEO synthesis → done (conditional based on iteration_count) ──────────
+    workflow.add_conditional_edges(
+        "ceo_orchestrator",
+        route_from_ceo_synthesis,
+        {
+            "fan_out":      "ceo_orchestrator",   # loop back for planning (should not happen after synthesis)
+            "done_notify":  "done_notify",
+        }
+    )
+
+    # ── Done → END ────────────────────────────────────────────────────────────
+    workflow.add_edge("done_notify", END)
 
     # ── Compile ───────────────────────────────────────────────────────────────
     if use_checkpointer:

@@ -1,3 +1,256 @@
+# """
+# agents/ceo.py
+# ─────────────
+# NODE 0 — PaddleAurum CEO Orchestrator
+
+# Responsibilities:
+#   - Receive raw business goal from the trigger layer
+#   - Use LLM reasoning to decompose the goal into a task queue
+#   - Write task assignments into PaddleAurumState
+#   - After execution: synthesise a final strategic report
+#   - Re-plan if critical tasks fail (up to iteration_count < 3)
+# """
+# from __future__ import annotations
+
+# import json
+# import logging
+# import time
+# from typing import Any, Dict, List
+
+# import yaml
+# from crewai import Agent, Crew, Process, Task
+
+# from config.settings import settings
+# from models.ollama_loader import get_llm_async
+# from workflows.state import PaddleAurumState, TaskItem, make_task
+
+# logger = logging.getLogger(__name__)
+
+# # ── Load config ───────────────────────────────────────────────────────────────
+
+# def _load_config() -> tuple[Dict, Dict]:
+#     with open("config/agents.yaml") as f:
+#         agents_cfg = yaml.safe_load(f)
+#     with open("config/tasks.yaml") as f:
+#         tasks_cfg = yaml.safe_load(f)
+#     return agents_cfg, tasks_cfg
+
+
+# # ── Task decomposition ────────────────────────────────────────────────────────
+
+# _DECOMPOSE_SYSTEM = """You are the PaddleAurum CEO AI. Your job is to decompose
+# business goals into discrete actionable tasks for your agent team.
+# Agent names: chat_buddy, stock_scout, recommender, customer_captain,
+# stock_sergeant, promo_general.
+# Always output valid JSON only — no markdown, no explanation."""
+
+# _DECOMPOSE_TEMPLATE = """
+# Goal: {goal}
+# Store context: {context}
+# Previous session summaries: {summaries}
+
+# Decompose this goal into 3-8 tasks. Each task object must have:
+#   task_id (string, 8 chars), description (string), assigned_to (string),
+#   priority (int 1-5), required_tools (list), max_retries (int, default 3).
+
+# Assigned_to must be one of: chat_buddy, stock_scout, recommender,
+# customer_captain, stock_sergeant, promo_general.
+
+# JSON array only:
+# """
+
+
+# async def decompose_goal(
+#     goal: str,
+#     shared_context: Dict,
+#     recent_summaries: List[Dict],
+# ) -> List[TaskItem]:
+#     """
+#     Call the CEO LLM to break a goal into task items.
+#     Returns a list of TaskItem dicts ready for the state.
+#     """
+#     llm = await get_llm_async("ceo")
+
+#     prompt = _DECOMPOSE_TEMPLATE.format(
+#         goal=goal,
+#         context=json.dumps(shared_context, indent=2)[:800],
+#         summaries=json.dumps(recent_summaries, indent=2)[:400],
+#     )
+
+#     full_prompt = f"{_DECOMPOSE_SYSTEM}\n\n{prompt}"
+
+#     try:
+#         raw_response = await llm.ainvoke(full_prompt)
+#         # Strip any accidental markdown fences
+#         clean = raw_response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+#         raw_tasks = json.loads(clean)
+#     except (json.JSONDecodeError, Exception) as exc:
+#         logger.error("CEO decompose_goal failed to parse LLM output: %s", exc)
+#         # Graceful fallback: create one generic task per branch
+#         raw_tasks = _fallback_tasks(goal)
+
+#     tasks = []
+#     for t in raw_tasks:
+#         tasks.append(
+#             make_task(
+#                 description=t.get("description", goal),
+#                 assigned_to=t.get("assigned_to", "chat_buddy"),
+#                 priority=int(t.get("priority", 3)),
+#                 input_data={"goal": goal, **t},
+#                 required_tools=t.get("required_tools", []),
+#                 max_retries=int(t.get("max_retries", 3)),
+#             )
+#         )
+
+#     logger.info("CEO decomposed goal into %d tasks", len(tasks))
+#     return tasks
+
+
+# def _fallback_tasks(goal: str) -> List[Dict]:
+#     """Minimal fallback if LLM decomposition fails entirely."""
+#     return [
+#         {"description": f"Support: {goal}", "assigned_to": "chat_buddy",    "priority": 2},
+#         {"description": f"Inventory: {goal}", "assigned_to": "stock_scout", "priority": 2},
+#         {"description": f"Promo: {goal}",     "assigned_to": "recommender", "priority": 3},
+#     ]
+
+
+# # ── Report synthesis ──────────────────────────────────────────────────────────
+
+# _SYNTHESIS_TEMPLATE = """
+# You are the PaddleAurum CEO. Synthesise an executive report from these team outputs.
+
+# Customer Support: {customer_output}
+# Inventory:        {inventory_output}
+# Marketing:        {marketing_output}
+# Recommendations:  {recommendation_output}
+# Failed tasks:     {failed_tasks}
+
+# Return JSON only with keys: summary, wins (list), blockers (list),
+# next_actions (list), timestamp (ISO string).
+# """
+
+
+# async def synthesise_report(state: PaddleAurumState) -> Dict[str, Any]:
+#     llm = await get_llm_async("ceo")
+#     prompt = _SYNTHESIS_TEMPLATE.format(
+#         customer_output=json.dumps(state.get("customer_support_output") or {})[:600],
+#         inventory_output=json.dumps(state.get("inventory_output") or {})[:600],
+#         marketing_output=json.dumps(state.get("marketing_output") or {})[:600],
+#         recommendation_output=json.dumps(state.get("recommendation_output") or {})[:400],
+#         failed_tasks=json.dumps(state.get("failed_tasks") or [])[:400],
+#     )
+
+#     try:
+#         raw = await llm.ainvoke(f"{_DECOMPOSE_SYSTEM}\n\n{prompt}")
+#         clean = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+#         report = json.loads(clean)
+#     except Exception as exc:
+#         logger.error("CEO synthesis failed: %s", exc)
+#         report = {
+#             "summary": "Execution completed with partial results.",
+#             "wins": [],
+#             "blockers": [str(exc)],
+#             "next_actions": ["Review logs and re-run."],
+#             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+#         }
+
+#     return report
+
+
+# # ── LangGraph node function ───────────────────────────────────────────────────
+
+# async def ceo_orchestrator_node(state: PaddleAurumState) -> PaddleAurumState:
+#     """
+#     LangGraph node for CEO orchestration.
+#     On first call (iteration_count == 0): decompose goal → populate task_queue.
+#     On subsequent calls (re-plan): synthesise final report.
+#     """
+#     from memory.memory_manager import memory_manager
+
+#     state["current_step"] = "ceo_orchestrator"
+
+#     if state["iteration_count"] == 0:
+#         # ── Initial decomposition ──────────────────────────────────────────
+#         logger.info("[CEO] Decomposing goal: %s", state["goal"])
+#         recent_summaries = await memory_manager.get_recent_summaries(limit=3)
+#         tasks = await decompose_goal(
+#             state["goal"], state["shared_context"], recent_summaries
+#         )
+#         state["task_queue"] = tasks
+
+#         # Record in short-term memory
+#         state["short_term_memory"].append({
+#             "agent_id": "ceo",
+#             "role": "assistant",
+#             "content": f"Decomposed goal into {len(tasks)} tasks.",
+#             "timestamp": time.time(),
+#             "tool_calls": None,
+#             "tool_results": None,
+#         })
+
+#     elif state["iteration_count"] >= 1:
+#         # ── Post-execution synthesis ───────────────────────────────────────
+#         logger.info("[CEO] Synthesising final report (iteration %d)", state["iteration_count"])
+#         report = await synthesise_report(state)
+#         state["final_report"] = report
+
+#         await memory_manager.write_session_summary(state["session_id"], report)
+
+#     state["iteration_count"] += 1
+#     return state
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# @##################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 """
 agents/ceo.py
 ─────────────
@@ -14,8 +267,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field, ValidationError
 
 import yaml
 from crewai import Agent, Crew, Process, Task
@@ -36,6 +291,39 @@ def _load_config() -> tuple[Dict, Dict]:
     return agents_cfg, tasks_cfg
 
 
+# ── Pydantic validation models ────────────────────────────────────────────────
+
+class TaskItemSchema(BaseModel):
+    description: str
+    assigned_to: str
+    priority: int = Field(ge=1, le=5)
+    required_tools: List[str] = Field(default_factory=list)
+    max_retries: int = Field(default=3, ge=1)
+
+    class Config:
+        extra = "forbid"  # disallow extra fields to keep schema clean
+
+
+class ExecutiveReportSchema(BaseModel):
+    summary: str
+    wins: List[str]
+    blockers: List[str]
+    next_actions: List[str]
+    timestamp: str  # ISO string
+
+
+# ── Helper: clean JSON from markdown fences ─────────────────────────────────
+
+def _clean_json_response(raw: str) -> str:
+    """
+    Remove markdown code fences (```json ... ```) and any surrounding whitespace.
+    """
+    # Remove leading ```json or ``` and trailing ```
+    cleaned = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
 # ── Task decomposition ────────────────────────────────────────────────────────
 
 _DECOMPOSE_SYSTEM = """You are the PaddleAurum CEO AI. Your job is to decompose
@@ -50,13 +338,14 @@ Store context: {context}
 Previous session summaries: {summaries}
 
 Decompose this goal into 3-8 tasks. Each task object must have:
-  task_id (string, 8 chars), description (string), assigned_to (string),
-  priority (int 1-5), required_tools (list), max_retries (int, default 3).
+  description (string), assigned_to (string),
+  priority (int 1-5), required_tools (list of strings, optional),
+  max_retries (int, optional, default 3).
 
 Assigned_to must be one of: chat_buddy, stock_scout, recommender,
 customer_captain, stock_sergeant, promo_general.
 
-JSON array only:
+Return a JSON array of objects with the above fields only.
 """
 
 
@@ -71,30 +360,47 @@ async def decompose_goal(
     """
     llm = await get_llm_async("ceo")
 
+    # Truncate context safely with logging
+    context_str = json.dumps(shared_context, indent=2)
+    summaries_str = json.dumps(recent_summaries, indent=2)
+
+    if len(context_str) > 800:
+        logger.warning("CEO decompose: shared_context truncated from %d to 800 chars", len(context_str))
+        context_str = context_str[:800]
+    if len(summaries_str) > 400:
+        logger.warning("CEO decompose: summaries truncated from %d to 400 chars", len(summaries_str))
+        summaries_str = summaries_str[:400]
+
     prompt = _DECOMPOSE_TEMPLATE.format(
         goal=goal,
-        context=json.dumps(shared_context, indent=2)[:800],
-        summaries=json.dumps(recent_summaries, indent=2)[:400],
+        context=context_str,
+        summaries=summaries_str,
     )
 
     full_prompt = f"{_DECOMPOSE_SYSTEM}\n\n{prompt}"
 
     try:
         raw_response = await llm.ainvoke(full_prompt)
-        # Strip any accidental markdown fences
-        clean = raw_response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        clean = _clean_json_response(raw_response)
         raw_tasks = json.loads(clean)
-    except (json.JSONDecodeError, Exception) as exc:
-        logger.error("CEO decompose_goal failed to parse LLM output: %s", exc)
+
+        # Validate each task against schema
+        validated_tasks = []
+        for t in raw_tasks:
+            task_schema = TaskItemSchema(**t)
+            validated_tasks.append(task_schema.dict())
+
+    except (json.JSONDecodeError, ValidationError, Exception) as exc:
+        logger.error("CEO decompose_goal failed to parse/validate LLM output: %s", exc)
         # Graceful fallback: create one generic task per branch
-        raw_tasks = _fallback_tasks(goal)
+        validated_tasks = _fallback_tasks(goal)
 
     tasks = []
-    for t in raw_tasks:
+    for t in validated_tasks:
         tasks.append(
             make_task(
-                description=t.get("description", goal),
-                assigned_to=t.get("assigned_to", "chat_buddy"),
+                description=t["description"],
+                assigned_to=t["assigned_to"],
                 priority=int(t.get("priority", 3)),
                 input_data={"goal": goal, **t},
                 required_tools=t.get("required_tools", []),
@@ -117,37 +423,69 @@ def _fallback_tasks(goal: str) -> List[Dict]:
 
 # ── Report synthesis ──────────────────────────────────────────────────────────
 
-_SYNTHESIS_TEMPLATE = """
-You are the PaddleAurum CEO. Synthesise an executive report from these team outputs.
+_SYNTHESIS_SYSTEM = """You are the PaddleAurum CEO AI. Your role is to synthesise
+the outputs from all teams into a concise executive report.
+The report must include a summary, wins, blockers, next actions, and a timestamp.
+Always output valid JSON only — no markdown, no explanation."""
 
+_SYNTHESIS_TEMPLATE = """
 Customer Support: {customer_output}
 Inventory:        {inventory_output}
 Marketing:        {marketing_output}
 Recommendations:  {recommendation_output}
 Failed tasks:     {failed_tasks}
 
-Return JSON only with keys: summary, wins (list), blockers (list),
-next_actions (list), timestamp (ISO string).
+Return JSON only with keys: summary (string), wins (list of strings),
+blockers (list of strings), next_actions (list of strings),
+timestamp (string in ISO format).
 """
 
 
 async def synthesise_report(state: PaddleAurumState) -> Dict[str, Any]:
     llm = await get_llm_async("ceo")
+
+    # Truncate inputs with logging
+    customer_str = json.dumps(state.get("customer_support_output") or {})
+    inventory_str = json.dumps(state.get("inventory_output") or {})
+    marketing_str = json.dumps(state.get("marketing_output") or {})
+    recommendation_str = json.dumps(state.get("recommendation_output") or {})
+    failed_str = json.dumps(state.get("failed_tasks") or [])
+
+    if len(customer_str) > 600:
+        logger.warning("CEO synthesis: customer_output truncated from %d to 600 chars", len(customer_str))
+        customer_str = customer_str[:600]
+    if len(inventory_str) > 600:
+        logger.warning("CEO synthesis: inventory_output truncated from %d to 600 chars", len(inventory_str))
+        inventory_str = inventory_str[:600]
+    if len(marketing_str) > 600:
+        logger.warning("CEO synthesis: marketing_output truncated from %d to 600 chars", len(marketing_str))
+        marketing_str = marketing_str[:600]
+    if len(recommendation_str) > 400:
+        logger.warning("CEO synthesis: recommendation_output truncated from %d to 400 chars", len(recommendation_str))
+        recommendation_str = recommendation_str[:400]
+    if len(failed_str) > 400:
+        logger.warning("CEO synthesis: failed_tasks truncated from %d to 400 chars", len(failed_str))
+        failed_str = failed_str[:400]
+
     prompt = _SYNTHESIS_TEMPLATE.format(
-        customer_output=json.dumps(state.get("customer_support_output") or {})[:600],
-        inventory_output=json.dumps(state.get("inventory_output") or {})[:600],
-        marketing_output=json.dumps(state.get("marketing_output") or {})[:600],
-        recommendation_output=json.dumps(state.get("recommendation_output") or {})[:400],
-        failed_tasks=json.dumps(state.get("failed_tasks") or [])[:400],
+        customer_output=customer_str,
+        inventory_output=inventory_str,
+        marketing_output=marketing_str,
+        recommendation_output=recommendation_str,
+        failed_tasks=failed_str,
     )
 
+    full_prompt = f"{_SYNTHESIS_SYSTEM}\n\n{prompt}"
+
     try:
-        raw = await llm.ainvoke(f"{_DECOMPOSE_SYSTEM}\n\n{prompt}")
-        clean = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        report = json.loads(clean)
-    except Exception as exc:
+        raw = await llm.ainvoke(full_prompt)
+        clean = _clean_json_response(raw)
+        raw_report = json.loads(clean)
+        # Validate against schema
+        validated_report = ExecutiveReportSchema(**raw_report).dict()
+    except (json.JSONDecodeError, ValidationError, Exception) as exc:
         logger.error("CEO synthesis failed: %s", exc)
-        report = {
+        validated_report = {
             "summary": "Execution completed with partial results.",
             "wins": [],
             "blockers": [str(exc)],
@@ -155,7 +493,7 @@ async def synthesise_report(state: PaddleAurumState) -> Dict[str, Any]:
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
-    return report
+    return validated_report
 
 
 # ── LangGraph node function ───────────────────────────────────────────────────
