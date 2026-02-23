@@ -1,0 +1,69 @@
+{
+  "products": [
+    {
+      "id": 1001,
+      "title": "ProPaddle Carbon Elite",
+      "status": "active",
+      "variants": [
+        {
+          "id": 2001,
+          "sku": "PADDLE-CE-001",
+          "inventory_item_id": 3001,
+          "price": "149.99"
+        }
+      ]
+    },
+    {
+      "id": 1002,
+      "title": "SpeedBall 40-Hole Outdoor 3-Pack",
+      "status": "active",
+      "variants": [
+        {
+          "id": 2002,
+          "sku": "BALL-40-003",
+          "inventory_item_id": 3002,
+          "price": "19.99"
+        }
+      ]
+    }
+  ],
+  "inventory_levels": [
+    {
+      "inventory_item_id": 3001,
+      "location_id": 9001,
+      "available": 5
+    },
+    {
+      "inventory_item_id": 3002,
+      "location_id": 9001,
+      "available": 120
+    }
+  ],
+  "orders": [
+    {
+      "id": 5001,
+      "financial_status": "paid",
+      "fulfillment_status": "fulfilled",
+      "total_price": "149.99",
+      "created_at": "2024-06-01T10:00:00Z",
+      "line_items": [
+        {
+          "product_id": 1001,
+          "name": "ProPaddle Carbon Elite",
+          "quantity": 1,
+          "price": "149.99"
+        }
+      ]
+    }
+  ],
+  "customers": [
+    {
+      "id": "C001",
+      "email": "player@example.com",
+      "first_name": "Alex",
+      "last_name": "Smith",
+      "orders_count": 3,
+      "total_spent": "389.97"
+    }
+  ]
+}

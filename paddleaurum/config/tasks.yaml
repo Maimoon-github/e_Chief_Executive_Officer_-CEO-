@@ -1,0 +1,127 @@
+# config/tasks.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable task templates. The {placeholders} are filled at runtime.
+# expected_output defines the exact JSON schema each task must return.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── CEO Tasks ────────────────────────────────────────────────────────────────
+ceo_decompose_goal:
+  description: >
+    You have received the following business goal: "{goal}".
+    Current store context: {shared_context}.
+    Decompose this goal into discrete, actionable sub-tasks.
+    For each task specify: task_id, description, assigned_to (agent name),
+    priority (1=highest, 5=lowest), required_tools (list), max_retries.
+    Think step by step before outputting.
+  expected_output: >
+    A valid JSON array of task objects. Each object must contain:
+    task_id (string), description (string), assigned_to (string),
+    priority (integer 1-5), required_tools (list of strings),
+    max_retries (integer).
+    Output JSON only — no markdown, no preamble.
+
+ceo_synthesise_report:
+  description: >
+    All teams have completed their tasks. Here are the results:
+    Customer Support: {customer_output}
+    Inventory: {inventory_output}
+    Marketing: {marketing_output}
+    Recommendations: {recommendation_output}
+    Failed tasks: {failed_tasks}
+    Synthesise a concise executive report with: summary, wins,
+    blockers, next_actions.
+  expected_output: >
+    JSON object with keys: summary (string), wins (list),
+    blockers (list), next_actions (list), timestamp (ISO string).
+
+# ── Support Tasks ─────────────────────────────────────────────────────────────
+handle_customer_inquiry:
+  description: >
+    Handle the following customer inquiry:
+    Message: "{message}"
+    Customer ID: {customer_id}
+    Order ID (if provided): {order_id}
+    Use the Shopify tool to fetch order details if an order_id is present.
+    Use the database tool to retrieve the customer's purchase history.
+    Respond in a friendly, professional, on-brand pickleball voice.
+    If the issue requires a refund or manual intervention, set escalate=true.
+  expected_output: >
+    JSON object with keys: reply_text (string), escalate (boolean),
+    sentiment_score (float 0.0-1.0, where 1.0=very positive),
+    resolution_type (string: answered|escalated|refund_initiated|order_updated).
+
+review_support_queue:
+  description: >
+    Review the current open support tickets: {tickets}.
+    Identify any that have been waiting more than 2 hours.
+    Prioritise by: urgency keywords (refund, broken, wrong item),
+    customer lifetime value, and wait time.
+    Return a prioritised list with recommended actions.
+  expected_output: >
+    JSON object with keys: prioritised_tickets (list of ticket objects with
+    ticket_id and recommended_action), escalations_needed (list of ticket_ids).
+
+# ── Inventory Tasks ───────────────────────────────────────────────────────────
+scan_inventory_levels:
+  description: >
+    Scan current inventory levels for all active products via the Shopify API.
+    Compare each product's current quantity against its reorder threshold
+    stored in the database.
+    For products below threshold, calculate days_until_stockout using
+    the 30-day sales velocity from the database.
+    Flag any product where days_until_stockout < 7 as CRITICAL.
+  expected_output: >
+    JSON object with keys: total_products_scanned (int),
+    low_stock_alerts (list of objects with product_id, sku, current_qty,
+    threshold, days_until_stockout, severity: CRITICAL|WARNING|OK),
+    reorder_recommendations (list of objects with product_id, reorder_qty,
+    supplier_url, estimated_cost).
+
+check_supplier_availability:
+  description: >
+    For each product in the reorder list {reorder_list},
+    use the browser tool to check the supplier's website for availability
+    and current pricing.
+    Supplier URLs are stored in the restock_thresholds database table.
+  expected_output: >
+    JSON object with keys: supplier_checks (list of objects with
+    product_id, supplier_url, in_stock (boolean), supplier_price, notes).
+
+# ── Marketing Tasks ────────────────────────────────────────────────────────────
+draft_promo_campaign:
+  description: >
+    Create an email marketing campaign for the following objective: "{objective}".
+    Target segment: {segment} ({segment_size} customers).
+    Recommended products: {recommended_products}.
+    Brand voice: energetic, community-focused, pickleball-obsessed.
+    Include: subject line, preview text, headline, body (max 150 words),
+    call-to-action text and URL, and a discount code if applicable.
+  expected_output: >
+    JSON object with keys: subject_line (string), preview_text (string),
+    headline (string), body (string), cta_text (string), cta_url (string),
+    discount_code (string or null), estimated_open_rate (float).
+
+research_competitor_pricing:
+  description: >
+    Research current pricing for the following product categories
+    in the pickleball market: {categories}.
+    Use the search tool to find competitor prices on major pickleball
+    retailers. Focus on: paddle price ranges by category, ball multipacks,
+    accessories bundles.
+  expected_output: >
+    JSON object with keys: category_benchmarks (list of objects with
+    category, min_price, max_price, avg_price, top_competitors).
+
+# ── Recommendation Tasks ──────────────────────────────────────────────────────
+generate_recommendations:
+  description: >
+    Generate personalised product recommendations for customers
+    in segment: {segment}.
+    Use purchase history data from the database.
+    Apply cosine similarity on purchase vectors to find product affinity.
+    Return top 3 recommendations per customer with confidence scores.
+    Focus on cross-sell (complementary products) not just upsell.
+  expected_output: >
+    JSON object with keys: recommendation_sets (list of objects with
+    customer_id, recommendations (list of objects with product_id,
+    product_name, confidence_score, reason_code: cross_sell|upsell|trending)).

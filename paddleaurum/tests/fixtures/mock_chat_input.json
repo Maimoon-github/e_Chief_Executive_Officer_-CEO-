@@ -1,0 +1,22 @@
+{
+  "basic_question": {
+    "message": "Which paddle is best for a beginner who plays outdoors?",
+    "customer_id": "C001",
+    "order_id": ""
+  },
+  "order_inquiry": {
+    "message": "Where is my order? I placed it 3 days ago.",
+    "customer_id": "C002",
+    "order_id": "5001"
+  },
+  "complaint": {
+    "message": "My paddle arrived cracked! I want a full refund immediately.",
+    "customer_id": "C003",
+    "order_id": "5002"
+  },
+  "product_compare": {
+    "message": "What is the difference between the Carbon Elite and the Graphite Pro?",
+    "customer_id": "",
+    "order_id": ""
+  }
+}
